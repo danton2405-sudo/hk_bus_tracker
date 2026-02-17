@@ -1,71 +1,142 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>HK Bus ETA Tracker (No Ads)</title>
-  <style>
-    body { font-family: Arial; padding: 20px; }
-    input, button { padding: 8px; margin: 5px; }
-    #results { margin-top: 20px; }
-    .bus { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
-  </style>
-</head>
-<body>
-  <h1>Hong Kong Bus Real-Time Tracker</h1>
-  <p>Enter route (e.g. 720, 1A, 968) and company (KMB/CTB):</p>
-  
-  <input id="route" placeholder="Route e.g. 720" value="720">
-  <select id="company">
-    <option value="kmb">KMB / LWB</option>
-    <option value="ctb">Citybus / NWFB</option>
-  </select>
-  <button onclick="getETA()">Get ETAs</button>
-  
-  <div id="results"></div>
+<script>
+  const proxy = 'https://corsproxy.io/?';  // Reliable free proxy in 2026 for this use-case
 
-  <script>
-    async function getETA() {
-      const route = document.getElementById('route').value.trim().toUpperCase();
-      const company = document.getElementById('company').value;
-      const results = document.getElementById('results');
-      results.innerHTML = '<p>Loading...</p>';
+  // ------------------- Haversine distance helper -------------------
+  function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Earth radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // distance in km
+  }
+
+  // ------------------- Get ETAs for selected route -------------------
+  async function getETAs() {
+    const company = document.getElementById('company').value;
+    const route = document.getElementById('route').value.trim().toUpperCase();
+    const results = document.getElementById('results');
+    results.innerHTML = '<p>Loading ETAs...</p>';
+
+    try {
+      let realUrl;
+      if (company === 'kmb') {
+        // KMB/LWB route-eta (bound 1 = outbound; you can try 2 later if needed)
+        realUrl = `https://data.etabus.gov.hk/v1/transport/kmb/route-eta/${route}/1`;
+      } else {
+        // Citybus: For now, just show instruction (full ETA needs stop ID)
+        // Later we can add stop picker
+        results.innerHTML = `<p>For Citybus/NWFB, ETAs require a specific stop ID.<br>
+          Use "Find Stops Near Me" to get IDs, then test manually.<br>
+          Example ETA URL (replace STOPID): https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/STOPID/${route}</p>`;
+        return;
+      }
+
+      const fullUrl = proxy + encodeURIComponent(realUrl);
+      const res = await fetch(fullUrl);
+
+      if (!res.ok) {
+        throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+      }
+
+      const data = await res.json();
+
+      if (!data.data || !data.data.length) {
+        results.innerHTML = '<p>No bus data found for this route/bound. Try changing bound to 2 or check route number.</p>';
+        return;
+      }
+
+      let html = `<h2>Route ${route} (${company.toUpperCase()}) Real-Time ETAs</h2>`;
+      data.data.forEach(item => {
+        const etaTime = item.eta ? new Date(item.eta) : null;
+        const mins = etaTime ? Math.round((etaTime - Date.now()) / 60000) : '?';
+        const status = mins > 0 ? `${mins} min` : (mins === 0 ? 'Now/Arrived' : `${Math.abs(mins)} min past`);
+        html += `
+          <div class="bus">
+            <strong>Stop / Dest:</strong> ${item.stop || 'N/A'} → ${item.dest_tc || item.dest_en || 'N/A'}<br>
+            <strong>ETA:</strong> ${status}<br>
+            <small>Remarks: ${item.rmk_tc || item.rmk_en || 'N/A'}</small>
+          </div>`;
+      });
+      results.innerHTML = html;
+    } catch (err) {
+      results.innerHTML = `<p>Error loading data: ${err.message}<br>Check browser console (F12 → Console) for details.</p>`;
+      console.error('ETA fetch error:', err);
+    }
+  }
+
+  // ------------------- Find nearby Citybus/NWFB stops -------------------
+  let allStops = null; // Cache the full list
+
+  async function getNearbyStops() {
+    const nearby = document.getElementById('nearby');
+    nearby.innerHTML = 'Requesting your location... (allow permission if prompted)';
+
+    if (!navigator.geolocation) {
+      nearby.innerHTML = 'Geolocation is not supported by your browser.';
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const userLat = pos.coords.latitude;
+      const userLon = pos.coords.longitude;
+      nearby.innerHTML = `Your location ≈ ${userLat.toFixed(4)}, ${userLon.toFixed(4)}<br>Loading nearby stops...`;
 
       try {
-        let url;
-        if (company === 'kmb') {
-          // Example: Get ETAs for all stops on route (bound 1 = outbound)
-          url = `https://data.etabus.gov.hk/v1/transport/kmb/route-eta/${route}/1`;
-        } else {
-          // Citybus example: Need stop ID first; simplify by showing how to get ETA for known stop
-          // For full app, first fetch stops, let user pick
-          results.innerHTML = '<p>For Citybus, try a known stop ID. Example full ETA call: https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/001313/720</p>';
+        if (!allStops) {
+          const realUrl = 'https://rt.data.gov.hk/v2/transport/citybus/stop';
+          const fullUrl = proxy + encodeURIComponent(realUrl);
+
+          const res = await fetch(fullUrl);
+          if (!res.ok) throw new Error(`Stops fetch failed: ${res.status}`);
+
+          const json = await res.json();
+          if (json.type !== 'Stop' || !Array.isArray(json.data)) {
+            throw new Error('Unexpected stops data format');
+          }
+
+          allStops = json.data; // array of {stop, name_tc, name_en, lat, long, ...}
+          nearby.innerHTML += `<br>Fetched ${allStops.length} Citybus stops. Finding closest...`;
+        }
+
+        // Calculate & sort by distance (filter < ~3km for relevance)
+        const sorted = allStops
+          .map(stop => ({
+            ...stop,
+            distance: haversineDistance(userLat, userLon, parseFloat(stop.lat), parseFloat(stop.long))
+          }))
+          .filter(s => s.distance < 3)
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, 10); // Top 10 closest
+
+        if (sorted.length === 0) {
+          nearby.innerHTML = 'No Citybus stops found within ~3 km. Try moving or check permission.';
           return;
         }
 
-        const res = await fetch(url);
-        const data = await res.json();
-
-        if (data.type !== 'RouteETA' || !data.data?.length) {
-          results.innerHTML = '<p>No data found. Check route number.</p>';
-          return;
-        }
-
-        let html = `<h2>Route ${route} ETAs (KMB example)</h2>`;
-        data.data.forEach(item => {
-          const mins = item.eta ? Math.round((new Date(item.eta) - Date.now()) / 60000) : '?';
+        let html = '<h3>Closest Citybus / NWFB Stops:</h3>';
+        sorted.forEach(s => {
           html += `
-            <div class="bus">
-              <strong>Stop:</strong> ${item.stop} | 
-              <strong>ETA:</strong> ${mins > 0 ? mins + ' min' : 'Now/Arrived'} 
-              (${item.dest_tc || item.dest_en}) 
-              <br><small>Remarks: ${item.rmk_tc || 'N/A'}</small>
+            <div class="stop">
+              <strong>${s.name_tc} (${s.name_en || 'N/A'})</strong><br>
+              Stop ID: <code>${s.stop}</code><br>
+              Distance: ${s.distance.toFixed(2)} km<br>
+              <small>Coords: ${s.lat}, ${s.long}</small>
             </div>`;
         });
-        results.innerHTML = html;
+        nearby.innerHTML = html;
       } catch (err) {
-        results.innerHTML = '<p>Error: ' + err.message + ' (API may block direct browser calls due to CORS – use a proxy or backend if needed)</p>';
+        nearby.innerHTML = `Error: ${err.message}<br>(Proxy or API issue — try again or check console)`;
+        console.error('Nearby stops error:', err);
       }
-    }
-  </script>
-</body>
-</html>
+    }, (err) => {
+      nearby.innerHTML = `Location error: ${err.message} (you may need to allow location access)`;
+    }, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 0
+    });
+  }
+</script>
