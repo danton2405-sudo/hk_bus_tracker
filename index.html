@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HK Bus ETA Tracker (No Ads)</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    input, button { padding: 8px; margin: 5px; }
+    #results { margin-top: 20px; }
+    .bus { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>Hong Kong Bus Real-Time Tracker</h1>
+  <p>Enter route (e.g. 720, 1A, 968) and company (KMB/CTB):</p>
+  
+  <input id="route" placeholder="Route e.g. 720" value="720">
+  <select id="company">
+    <option value="kmb">KMB / LWB</option>
+    <option value="ctb">Citybus / NWFB</option>
+  </select>
+  <button onclick="getETA()">Get ETAs</button>
+  
+  <div id="results"></div>
+
+  <script>
+    async function getETA() {
+      const route = document.getElementById('route').value.trim().toUpperCase();
+      const company = document.getElementById('company').value;
+      const results = document.getElementById('results');
+      results.innerHTML = '<p>Loading...</p>';
+
+      try {
+        let url;
+        if (company === 'kmb') {
+          // Example: Get ETAs for all stops on route (bound 1 = outbound)
+          url = `https://data.etabus.gov.hk/v1/transport/kmb/route-eta/${route}/1`;
+        } else {
+          // Citybus example: Need stop ID first; simplify by showing how to get ETA for known stop
+          // For full app, first fetch stops, let user pick
+          results.innerHTML = '<p>For Citybus, try a known stop ID. Example full ETA call: https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/001313/720</p>';
+          return;
+        }
+
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.type !== 'RouteETA' || !data.data?.length) {
+          results.innerHTML = '<p>No data found. Check route number.</p>';
+          return;
+        }
+
+        let html = `<h2>Route ${route} ETAs (KMB example)</h2>`;
+        data.data.forEach(item => {
+          const mins = item.eta ? Math.round((new Date(item.eta) - Date.now()) / 60000) : '?';
+          html += `
+            <div class="bus">
+              <strong>Stop:</strong> ${item.stop} | 
+              <strong>ETA:</strong> ${mins > 0 ? mins + ' min' : 'Now/Arrived'} 
+              (${item.dest_tc || item.dest_en}) 
+              <br><small>Remarks: ${item.rmk_tc || 'N/A'}</small>
+            </div>`;
+        });
+        results.innerHTML = html;
+      } catch (err) {
+        results.innerHTML = '<p>Error: ' + err.message + ' (API may block direct browser calls due to CORS – use a proxy or backend if needed)</p>';
+      }
+    }
+  </script>
+</body>
+</html>
